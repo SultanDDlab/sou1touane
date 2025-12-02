@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Where is my mind?</title>
+  <style>
+    html, body { margin: 0; padding: 0; background:#0c1a22; }
+    canvas { display:block; image-rendering: pixelated; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.2/lib/p5.min.js"></script>
+</head>
+<body>
+<script>
+  let pg;          
+  let pixelScale;  
+  let stars = [];
+
+  const SKY  = '#21394d';
+  const ROOM = '#364f59';
+  const DESK = '#1f4647';
+
+  let lampOn = true;
+  let buildings = [];
+
+  // clouds
+  let cloudsImg;
+  let cloudX = 0;
+  const cloudSpeed = 0.05;
+  let coupleImg;
+
+  // explosion assets and state
+  let smokeImg, explosionImg;
+  let particles = [];
+  let explosionTriggered = false;
+
+  // sound
+  let song;
+  let songStarted = false;
+
+  // fall + shake
+  const FALL = { gFactor: 0.0022, maxVFactor: 0.045 };
+  let shakeMag = 0;
+  const SHAKE_DECAY = 0.92;
+
+  // message text
+  let showMsg = true;
+  let msgAlpha = 255;
+  const MSG_LINE1 = "you've met me at a very strange time in my life";
+  const MSG_LINE2 = "press E to fight the capitalism";
+  let postMsg = false; // false = before explosion, true = after
+
+  // 25th frame flash
+  let flashImg;
+  let flashTimer = 0;
+  let currentFlash = null;
+  const FLASH = { durationFrames: 3, probPerFrame: 0.004 };
+
+  const WIN = {
+    cellW: 3,
+    cellH: 4,
+    gapX: 1,
+    gapY: 2,
+    inset: 2,
+    litProb: 0.28
+  };
+
+  function preload(){
+    cloudsImg = loadImage('clouds.png');
+    coupleImg = loadImage('couple.png');
+    smokeImg = loadImage('smoke.png');
+    explosionImg = loadImage('explosion.png');
+    flashImgs = [
+  loadImage('25th.jpg'),
+  loadImage('25th.png')
+];
+  }
+
+  function setup(){
+    computePixelScale();
+    createCanvas(windowWidth, windowHeight);
+    noSmooth();
+
+    song = new Audio('whereismymind.mp3');
+    song.preload = 'auto';
+    song.volume = 0.8;
+    song.loop = false;
+
+    rebuildScene();
+  }
+
+  function windowResized(){
+    resizeCanvas(windowWidth, windowHeight);
+    computePixelScale();
+    rebuildScene();
+  }
+
+  function computePixelScale(){
+    pixelScale = constrain(floor(min(windowWidth, windowHeight) / 180), 3, 8);
+    const w = max(120, floor(windowWidth / pixelScale));
+    const h = max(100, floor(windowHeight / pixelScale));
+    pg = createGraphics(w, h);
+    pg.noStroke();
+  }
+
+  function rebuildScene(){
+    buildings = [];
+    stars = [];
+    particles = [];
+    explosionTriggered = false;
+    shakeMag = 0;
+    showMsg = true;
+    msgAlpha = 255;
+    songStarted = false;
+    postMsg = false;
+
+    const skyH = pg.height * 0.75;
+
+    const count = 150;
+    for (let i = 0; i < count; i++) {
+      const sx = pg.random(pg.width);
+      const sy = pg.random(skyH);
+      stars.push({ x: sx, y: sy, b: pg.random(180, 255) });
+    }
+
+    const horizon = pg.height * 0.75;
+    let x = -10;
+    while (x < pg.width + 20) {
+      const bw = pg.random(30, 50);
+      const bh = pg.random(pg.height*0.30, pg.height*0.90);
+      const by = horizon - bh;
+      const b = { 
+        x, y: by, w: bw, h: bh, base:'#152433', windows: [],
+        slide:false, vy:0
+      };
+
+      const startX = b.x + WIN.inset;
+      const startY = b.y + WIN.inset;
+      const cols = max(1, floor((b.w - WIN.inset*2) / (WIN.cellW + WIN.gapX)));
+      const rows = max(1, floor((b.h - WIN.inset*2) / (WIN.cellH + WIN.gapY)));
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const wx = startX + c * (WIN.cellW + WIN.gapX);
+          const wy = startY + r * (WIN.cellH + WIN.gapY);
+          const lit = pg.random() < WIN.litProb;
+          b.windows.push({ x: wx, y: wy, lit });
+        }
+      }
+
+      buildings.push(b);
+      x += bw + pg.random(2, 10);
+    }
+  }
+
+  function draw(){
+    drawToBuffer();
+    image(pg, 0, 0, pg.width * pixelScale, pg.height * pixelScale);
+    drawFlashOverlay(); // draw the 25th frame effect
+  }
+
+  function drawToBuffer(){
+    const skyH = pg.height * 0.75;
+    pg.background(SKY);
+
+    // shake scene
+    pg.push();
+    if (shakeMag > 0.05) {
+      const dx = pg.random(-shakeMag, shakeMag);
+      const dy = pg.random(-shakeMag, shakeMag);
+      pg.translate(dx, dy);
+      shakeMag *= SHAKE_DECAY;
+    }
+
+    // stars
+    for (const s of stars) {
+      pg.fill(s.b);
+      pg.rect(s.x, s.y, 1, 1);
+    }
+
+    // slide buildings
+    if (explosionTriggered) {
+      const g = pg.height * FALL.gFactor;
+      const vmax = pg.height * FALL.maxVFactor;
+      for (const b of buildings) {
+        if (b.slide) {
+          b.vy = min(b.vy + g, vmax);
+          b.y += b.vy;
+        }
+      }
+      buildings = buildings.filter(b => b.y < pg.height + b.h);
+    }
+
+    // draw buildings
+    for (const b of buildings) {
+      pg.fill(b.base);
+      pg.rect(b.x, b.y, b.w, b.h);
+      for (const w of b.windows) {
+        if (w.lit) pg.fill(255, 235, 170, 230);
+        else pg.fill(30, 45, 60, 160);
+        pg.rect(w.x, w.y, WIN.cellW, WIN.cellH);
+      }
+    }
+
+    // clouds
+    if (cloudsImg) {
+      const baseScale = (pg.height * 0.35) / cloudsImg.height;
+      const baseW = cloudsImg.width * baseScale;
+      const baseH = cloudsImg.height * baseScale;
+
+      const layers = [
+        { speed: 0.03, y: pg.height * 0.10, scale: 1.0, alpha: 60 },
+        { speed: 0.05, y: pg.height * 0.20, scale: 1.2, alpha: 45 },
+        { speed: 0.07, y: pg.height * 0.30, scale: 1.4, alpha: 35 }
+      ];
+
+      for (const layer of layers) {
+        cloudX = (cloudX + layer.speed) % (baseW * layer.scale);
+        const w = baseW * layer.scale;
+        const h = baseH * layer.scale;
+        pg.push();
+        pg.tint(255, layer.alpha);
+        for (let x = -w; x < pg.width + w; x += w) {
+          pg.image(cloudsImg, x - cloudX, layer.y, w, h);
+        }
+        pg.noTint();
+        pg.pop();
+      }
+    }
+
+    // particles
+    updateAndDrawParticles();
+
+    // foreground and furniture
+    pg.fill(ROOM);
+    pg.rect(0, pg.height*0.74, pg.width, pg.height*0.26);
+    drawFrame();
+    pg.fill(DESK);
+    pg.rect(pg.width*0.78, pg.height*0.70, pg.width*0.20, pg.height*0.35);
+    drawLamp(pg.width*0.91, pg.height*0.65);
+
+    pg.pop(); // end shake
+
+    // draw pixel text overlay
+    drawHUD();
+  }
+
+  function drawFrame(){
+    pg.fill(0);
+    const t = max(3, pg.width*0.01);
+    pg.rect(0, pg.height*0.10, pg.width, t);
+    pg.rect(0, pg.height*0.73, pg.width, t);
+    pg.rect(pg.width*0.25 - t/2, 0, t, pg.height*0.73);
+    pg.rect(pg.width*0.50 - t/2, 0, t, pg.height*0.73);
+    pg.rect(pg.width*0.75 - t/2, 0, t, pg.height*0.73);
+
+    if (coupleImg) {
+      const targetH = pg.height * 0.90;
+      const scale = targetH / coupleImg.height;
+      const w = coupleImg.width * scale;
+      const h = coupleImg.height * scale;
+      const x = (pg.width - w) * 0.5;
+      const y = (pg.height - h) * 2.1;
+      pg.image(coupleImg, x, y, w, h);
+    }
+  }
+
+  function drawLamp(cx, cy){
+    pg.push();
+    pg.stroke(0); pg.strokeWeight(2);
+    pg.line(cx, cy, cx, cy + pg.height*0.09);
+    pg.line(cx, cy, cx - pg.width*0.03, cy - pg.height*0.04);
+    pg.noStroke();
+    pg.fill('#000');
+    pg.arc(cx - pg.width*0.03, cy - pg.height*0.04, pg.width*0.04, pg.width*0.04, Math.PI, Math.PI*2);
+
+    if (lampOn) {
+      const lx = cx - pg.width * 0.03;
+      const ly = cy - pg.height * 0.04;
+      for (let r = 1; r < pg.width * 0.18; r += 2) {
+        const alpha = map(r, 1, pg.width * 0.18, 50, 0);
+        pg.fill(255, 255, 220, alpha);
+        pg.ellipse(lx, ly, r, r);
+      }
+    }
+    pg.pop();
+  }
+  
+  function keyTyped(){
+    if (key === 'l' || key === 'L') lampOn = !lampOn;
+    if ((key === 'e' || key === 'E') && !explosionTriggered) {
+      startExplosion();
+    }
+  }
+
+  function startExplosion(){
+    explosionTriggered = true;
+    shakeMag = 6;
+    postMsg = true; // switch to the post-explosion message
+    msgAlpha = 255;
+
+    if (song && !songStarted) {
+      song.currentTime = 0;
+      const p = song.play();
+      if (p && typeof p.catch === 'function') {
+        p.catch(() => {});
+      }
+      songStarted = true;
+    }
+
+    for (const b of buildings) {
+      if (pg.random() < 0.6) {
+        b.slide = true;
+        b.vy = pg.random(pg.height * 0.010, pg.height * 0.022);
+      } else {
+        b.slide = false;
+      }
+
+      const topY = b.y;
+      const leftX = b.x;
+      const rightX = b.x + b.w;
+
+      const exCount = 1 + floor(pg.random(0, 2));
+      for (let i = 0; i < exCount; i++) {
+        const x = pg.random(leftX, rightX);
+        const y = topY + pg.random(-6, 12);
+        particles.push(makeParticle(x, y, 'explosion'));
+      }
+
+      const smCount = 2 + floor(pg.random(0, 3));
+      for (let i = 0; i < smCount; i++) {
+        const x = pg.random(leftX - 8, rightX + 8);
+        const y = topY + pg.random(-10, 6);
+        particles.push(makeParticle(x, y, 'smoke'));
+      }
+    }
+  }
+
+  function makeParticle(x, y, kind){
+    if (kind === 'explosion') {
+      return {
+        kind, x, y,
+        vx: pg.random(-0.3, 0.3),
+        vy: pg.random(-0.2, 0.1),
+        life: 38, age: 0,
+        baseScale: pg.random(0.25, 0.6),
+        rot: pg.random(TWO_PI),
+        rotSpeed: pg.random(-0.04, 0.04)
+      };
+    } else {
+      return {
+        kind, x, y,
+        vx: pg.random(-0.12, 0.12),
+        vy: pg.random(-0.15, -0.02),
+        life: 120, age: 0,
+        baseScale: pg.random(0.3, 0.8),
+        rot: pg.random(TWO_PI),
+        rotSpeed: pg.random(-0.02, 0.02)
+      };
+    }
+  }
+
+  function updateAndDrawParticles(){
+    if (particles.length === 0) return;
+
+    for (const p of particles) {
+      p.age++;
+      p.x += p.vx;
+      p.y += p.vy;
+      if (p.kind === 'smoke') {
+        p.vx *= 0.99;
+        p.vy *= 0.99;
+      }
+      p.rot += p.rotSpeed;
+
+      const t = p.age / p.life;
+      if (p.kind === 'explosion') {
+        const alpha = 255 * (1 - t) * 0.8;
+        const scale = p.baseScale * (1 + 1.8 * t);
+        if (explosionImg) drawBillboard(explosionImg, p.x, p.y, scale, alpha, p.rot);
+      } else {
+        const alpha = 180 * (1 - t) * 0.8;
+        const scale = p.baseScale * (1 + 1.2 * t);
+        if (smokeImg) drawBillboard(smokeImg, p.x, p.y, scale, alpha, p.rot);
+      }
+    }
+
+    particles = particles.filter(p => p.age < p.life);
+  }
+
+  function drawBillboard(img, x, y, scale, alpha, rot){
+    const w = img.width * scale;
+    const h = img.height * scale;
+    pg.push();
+    pg.translate(x, y);
+    pg.rotate(rot);
+    pg.tint(255, alpha);
+    pg.image(img, -w/2, -h/2, w, h);
+    pg.noTint();
+    pg.pop();
+  }
+
+  function drawHUD(){
+    if (!showMsg || msgAlpha <= 0) return;
+
+    pg.push();
+    pg.noStroke();
+    pg.textAlign(CENTER, TOP);
+
+    const sz = max(7, floor(pg.height * 0.03));
+    pg.textSize(sz);
+
+    const x = pg.width * 0.5;
+    const y1 = pg.height * 0.85;
+
+    const line = postMsg ? MSG_LINE1 : MSG_LINE2;
+
+    pg.fill(0, 180 * (msgAlpha / 255) * 0.6);
+    pg.text(line, x+1, y1+1);
+    pg.fill(255, msgAlpha * 0.6);
+    pg.text(line, x, y1);
+
+    pg.pop();
+  }
+
+function drawFlashOverlay(){
+  // Draw if flashing
+  if (flashTimer > 0 && currentFlash) {
+    image(currentFlash, 0, 0, width, height);
+    flashTimer--;
+    return;
+  }
+
+  // Randomly trigger a flash
+  if (flashImgs.length > 0 && random() < FLASH.probPerFrame) {
+    flashTimer = FLASH.durationFrames;
+    currentFlash = random(flashImgs); // randomly pick one of the two
+  }
+}
+
+</script>
+
+
+
+</body>
+</html>
